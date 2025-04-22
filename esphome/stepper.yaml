@@ -1,0 +1,44 @@
+esphome:
+  name: blinds
+
+esp8266:
+  board: nodemcuv2
+
+logger:
+api:
+  password: ""
+ota:
+  - platform: esphome
+    password: ""
+wifi:
+  ssid: "Feldtfam"
+  password: "Nectarine03"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Blinds Fallback Hotspot"
+    password: "12345678"
+
+# Stepper Motor Configuration
+stepper:
+  - platform: a4988
+    id: my_stepper
+    step_pin: D5
+    dir_pin: D6
+    max_speed: 250
+    acceleration: 100
+    deceleration: 100
+    sleep_pin: GPIO16  # optional if you want to control SLP separately
+
+# Control from Home Assistant
+number:
+  - platform: template
+    name: "Stepper Target"
+    min_value: -1000
+    max_value: 1000
+    step: 10
+    set_action:
+      then:
+        - stepper.set_target:
+            id: my_stepper
+            target: !lambda 'return x;'

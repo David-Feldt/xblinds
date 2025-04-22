@@ -1,0 +1,28 @@
+esphome:
+  name: bedroom
+
+esp8266:
+  board: d1_mini
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: ""
+
+ota:
+  - platform: esphome
+    password: ""
+
+wifi:
+  ssid: "Feldtfam"
+  password: "Nectarine03"
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Bedroom Fallback Hotspot"
+    password: "sE9PYx7CAShd"
+
+captive_portal:
+    

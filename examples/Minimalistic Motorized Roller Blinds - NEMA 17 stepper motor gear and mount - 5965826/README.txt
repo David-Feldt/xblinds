@@ -1,0 +1,1 @@
+Minimalistic Motorized Roller Blinds - NEMA 17 stepper motor gear and mount by lushey on Thingiverse: https://www.thingiverse.com/thing:5965826

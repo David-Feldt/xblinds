@@ -1,0 +1,1 @@
+Blinds Smart Home Automation by Timors_Project_Journey on Thingiverse: https://www.thingiverse.com/thing:4966303
