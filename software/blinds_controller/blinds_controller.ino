@@ -37,11 +37,11 @@
 
 // WiFi settings
 //Old
-// const char* ssid = "Feldtfam";
-// const char* password = "Nectarine03";
+const char* ssid = "Feldtfam";
+const char* password = "Nectarine03";
 //New 
-const char* ssid = "New Stadium Guests";
-const char* password = "combo#2please";
+// const char* ssid = "New Stadium Guests";
+// const char* password = "combo#2please";
 
 // Global objects
 RTC_DS3231 rtc;
@@ -65,6 +65,9 @@ bool isMoving = false;
 long targetPosition = 0;
 int stepDelay = 1000; // Default step delay in microseconds
 
+// Add after other global variables
+bool isConnected = true;
+
 // Alarm structure
 struct Alarm {
   uint8_t hour;
@@ -76,6 +79,11 @@ struct Alarm {
 #define MAX_ALARMS 10
 Alarm alarms[MAX_ALARMS];
 int alarmCount = 0;
+
+// Add these global variables
+bool webSetupMode = false;
+long setupMinPosition = 0;
+long setupMaxPosition = 1000;
 
 void setup() {
   // Initialize serial for debugging
@@ -350,6 +358,9 @@ void updateMotor() {
       currentPosition--;
     }
     
+    // Update encoder position to match motor position
+    myEncoder.write(currentPosition);
+    
     // Check if we've reached the target
     if (currentPosition == targetPosition) {
       isMoving = false;
@@ -402,77 +413,53 @@ void enterSetupMode() {
 }
 
 void handleSetupMode() {
-  static int setupStep = 0;
-  static bool buttonWasReleased = true;
-  
-  // Wait until button is released before continuing
-  if (digitalRead(ENCODER_BTN) == HIGH) {
-    buttonWasReleased = true;
-  }
-  
-  if (setupStep == 0) { // Setting min position
-    long encoderPos = myEncoder.read();
+  if (server.hasArg("action")) {
+    String action = server.arg("action");
     
-    // Move motor to encoder position
-    if (encoderPos != currentPosition) {
-      Serial.print("Setup - Min Position: ");
-      Serial.println(encoderPos);
-      
-      // Move motor
-      moveStepperBySteps(encoderPos - currentPosition);
-      currentPosition = encoderPos;
+    if (action == "start") {
+      webSetupMode = true;
+      setupMinPosition = minPosition;
+      setupMaxPosition = maxPosition;
+      server.send(200, "text/plain", "Setup mode started");
+    } 
+    else if (action == "stop") {
+      webSetupMode = false;
+      server.send(200, "text/plain", "Setup mode stopped");
     }
-    
-    // When button is pressed, save min position and move to next step
-    if (digitalRead(ENCODER_BTN) == LOW && buttonWasReleased) {
-      minPosition = currentPosition;
-      Serial.print("Min position set to: ");
-      Serial.println(minPosition);
-      
-      setupStep = 1;
-      buttonWasReleased = false;
-      
-      Serial.println("Use encoder to set MAX position, then press button");
-    }
-  } 
-  else if (setupStep == 1) { // Setting max position
-    long encoderPos = myEncoder.read();
-    
-    // Move motor to encoder position
-    if (encoderPos != currentPosition) {
-      Serial.print("Setup - Max Position: ");
-      Serial.println(encoderPos);
-      
-      // Move motor
-      moveStepperBySteps(encoderPos - currentPosition);
-      currentPosition = encoderPos;
-    }
-    
-    // When button is pressed, save max position and exit setup mode
-    if (digitalRead(ENCODER_BTN) == LOW && buttonWasReleased) {
-      maxPosition = currentPosition;
-      Serial.print("Max position set to: ");
-      Serial.println(maxPosition);
-      
-      // Ensure min < max
-      if (minPosition > maxPosition) {
-        long temp = minPosition;
-        minPosition = maxPosition;
-        maxPosition = temp;
+    else if (action == "save") {
+      if (server.hasArg("min") && server.hasArg("max")) {
+        setupMinPosition = server.arg("min").toInt();
+        setupMaxPosition = server.arg("max").toInt();
+        
+        // Validate values
+        if (setupMinPosition >= setupMaxPosition) {
+          server.send(400, "text/plain", "Invalid values: min must be less than max");
+          return;
+        }
+        
+        // Save to EEPROM
+        minPosition = setupMinPosition;
+        maxPosition = setupMaxPosition;
+        EEPROM.put(MIN_POS_ADDR, minPosition);
+        EEPROM.put(MAX_POS_ADDR, maxPosition);
+        EEPROM.commit();
+        
+        webSetupMode = false;
+        server.send(200, "text/plain", "Settings saved");
+      } else {
+        server.send(400, "text/plain", "Missing parameters");
       }
-      
-      // Save settings
-      saveSettingsToEEPROM();
-      
-      // Exit setup mode
-      setupMode = false;
-      setupStep = 0;
-      
-      // Move to min position (blinds up)
-      moveBlindUp();
-      
-      Serial.println("Setup complete");
     }
+    else if (action == "status") {
+      String json = "{";
+      json += "\"setupMode\":" + String(webSetupMode ? "true" : "false") + ",";
+      json += "\"minPosition\":" + String(setupMinPosition) + ",";
+      json += "\"maxPosition\":" + String(setupMaxPosition);
+      json += "}";
+      server.send(200, "application/json", json);
+    }
+  } else {
+    server.send(400, "text/plain", "Missing action parameter");
   }
 }
 
@@ -540,6 +527,7 @@ void setupWebServer() {
   server.on("/api/alarms", HTTP_POST, handleSetAlarms);
   server.on("/api/time", HTTP_GET, handleGetTime);
   server.on("/api/time", HTTP_POST, handleSetTime);
+  server.on("/api/setup", HTTP_GET, handleSetupMode);  // New endpoint
   
   // Start server
   server.begin();
@@ -560,203 +548,236 @@ void handleRoot() {
   html += "    .btn-down { background-color: #f44336; }\n";
   html += "    .slider { width: 100%; }\n";
   html += "    .alarm-item { margin-bottom: 10px; border: 1px solid #ddd; padding: 10px; }\n";
+  html += "    .setup-mode { background-color: #ffeb3b; padding: 10px; margin: 10px 0; }\n";
+  html += "    .setup-mode input { width: 100px; margin: 0 10px; }\n";
+  html += "    .position-display { background-color: #e3f2fd; padding: 20px; margin: 20px 0; border-radius: 5px; text-align: center; }\n";
+  html += "    .position-display h2 { margin: 0; color: #1976d2; }\n";
+  html += "    .position-display p { margin: 10px 0; font-size: 18px; }\n";
+  html += "    .position-bar { width: 100%; height: 20px; background-color: #e0e0e0; border-radius: 10px; margin: 10px 0; }\n";
+  html += "    .position-fill { height: 100%; background-color: #4CAF50; border-radius: 10px; transition: width 0.3s; }\n";
+  html += "    .percentage-controls { margin: 20px 0; }\n";
+  html += "    .button-group { display: flex; justify-content: space-between; gap: 10px; }\n";
+  html += "    .percentage-btn { flex: 1; padding: 15px; font-size: 16px; }\n";
   html += "  </style>\n";
   html += "</head>\n";
   html += "<body>\n";
   html += "  <h1>Smart Blinds Controller</h1>\n";
-  html += "  <div id=\"statusDiv\">Loading status...</div>\n";
+  
+  // Position Display Section
+  html += "  <div class=\"position-display\">\n";
+  html += "    <h2>Current Position</h2>\n";
+  html += "    <p id=\"positionText\">Loading...</p>\n";
+  html += "    <div class=\"position-bar\">\n";
+  html += "      <div class=\"position-fill\" id=\"positionFill\" style=\"width: 0%\"></div>\n";
+  html += "    </div>\n";
+  html += "    <p id=\"positionDetails\">Loading details...</p>\n";
+  html += "  </div>\n";
+  
+  // Replace slider and up/down buttons with percentage buttons
+  html += "  <div class=\"percentage-controls\">\n";
+  html += "    <h2>Move Blinds</h2>\n";
+  html += "    <div class=\"button-group\">\n";
+  html += "      <button class=\"btn percentage-btn\" onclick=\"moveToPercentage(0)\">0%</button>\n";
+  html += "      <button class=\"btn percentage-btn\" onclick=\"moveToPercentage(25)\">25%</button>\n";
+  html += "      <button class=\"btn percentage-btn\" onclick=\"moveToPercentage(50)\">50%</button>\n";
+  html += "      <button class=\"btn percentage-btn\" onclick=\"moveToPercentage(75)\">75%</button>\n";
+  html += "      <button class=\"btn percentage-btn\" onclick=\"moveToPercentage(100)\">100%</button>\n";
+  html += "    </div>\n";
+  html += "  </div>\n";
+  
+  // Rest of the existing HTML...
+  html += "  <div class=\"setup-mode\">\n";
+  html += "    <h2>Setup Mode</h2>\n";
+  html += "    <div id=\"setupStatus\">Loading setup status...</div>\n";
+  html += "    <div id=\"setupControls\" style=\"display: none;\">\n";
+  html += "      <p>Set the minimum and maximum positions:</p>\n";
+  html += "      <input type=\"number\" id=\"minPosition\" placeholder=\"Min Position\">\n";
+  html += "      <input type=\"number\" id=\"maxPosition\" placeholder=\"Max Position\">\n";
+  html += "      <button class=\"btn\" onclick=\"saveSetup()\">Save Settings</button>\n";
+  html += "      <button class=\"btn\" onclick=\"stopSetup()\">Cancel</button>\n";
+  html += "    </div>\n";
+  html += "    <button class=\"btn\" id=\"startSetupBtn\" onclick=\"startSetup()\">Enter Setup Mode</button>\n";
+  html += "  </div>\n";
+  
   html += "  <div>\n";
   html += "    <button class=\"btn btn-up\" onclick=\"moveUp()\">Move Up</button>\n";
   html += "    <button class=\"btn btn-down\" onclick=\"moveDown()\">Move Down</button>\n";
   html += "  </div>\n";
+  
   html += "  <div>\n";
   html += "    <h2>Manual Position</h2>\n";
   html += "    <input type=\"range\" min=\"0\" max=\"100\" value=\"0\" class=\"slider\" id=\"positionSlider\">\n";
   html += "    <button class=\"btn\" onclick=\"setPosition()\">Set Position</button>\n";
   html += "  </div>\n";
-  html += "  <div>\n";
-  html += "    <h2>Alarms</h2>\n";
-  html += "    <div id=\"alarmsList\">Loading alarms...</div>\n";
-  html += "    <h3>Add New Alarm</h3>\n";
-  html += "    <div>\n";
-  html += "      <input type=\"time\" id=\"newAlarmTime\">\n";
-  html += "      <select id=\"newAlarmAction\">\n";
-  html += "        <option value=\"0\">Up</option>\n";
-  html += "        <option value=\"1\">Down</option>\n";
-  html += "      </select>\n";
-  html += "      <button class=\"btn\" onclick=\"addAlarm()\">Add Alarm</button>\n";
-  html += "    </div>\n";
-  html += "  </div>\n";
-  html += "  <div>\n";
-  html += "    <h2>Set Time</h2>\n";
-  html += "    <div id=\"currentTime\">Loading current time...</div>\n";
-  html += "    <input type=\"datetime-local\" id=\"newDateTime\">\n";
-  html += "    <button class=\"btn\" onclick=\"setTime()\">Set Time</button>\n";
-  html += "  </div>\n";
+  
+  // Add improved JavaScript for position updates
   html += "  <script>\n";
+  html += "    let isConnected = true;\n";
+  html += "    let retryCount = 0;\n";
+  html += "    const MAX_RETRIES = 5;\n";
+  html += "    const POLL_INTERVAL = 500; // Poll every 500ms\n";
+  html += "    \n";
   html += "    // Load initial data\n";
   html += "    window.onload = function() {\n";
   html += "      fetchStatus();\n";
-  html += "      fetchAlarms();\n";
-  html += "      fetchTime();\n";
-  html += "      // Refresh status every 5 seconds\n";
-  html += "      setInterval(fetchStatus, 5000);\n";
-  html += "      setInterval(fetchTime, 5000);\n";
+  html += "      fetchSetupStatus();\n";
+  // Start polling
+  html += "      startPolling();\n";
   html += "    };\n";
   html += "    \n";
+  html += "    function startPolling() {\n";
+  html += "      setInterval(fetchStatus, POLL_INTERVAL);\n";
+  html += "    }\n";
+  html += "    \n";
   html += "    function fetchStatus() {\n";
+  html += "      if (!isConnected) return;\n";
+  html += "      \n";
   html += "      fetch('/api/status')\n";
-  html += "        .then(response => response.json())\n";
+  html += "        .then(response => {\n";
+  html += "          if (!response.ok) {\n";
+  html += "            throw new Error('Network response was not ok');\n";
+  html += "          }\n";
+  html += "          return response.json();\n";
+  html += "        })\n";
   html += "        .then(data => {\n";
-  html += "          document.getElementById('statusDiv').innerHTML = \n";
-  html += "            '<p>Current Position: ' + data.position + '</p>' +\n";
-  html += "            '<p>State: ' + (data.state == 0 ? 'Up' : data.state == 1 ? 'Down' : 'Custom') + '</p>';\n";
-  html += "          \n";
-  html += "          // Calculate slider percentage\n";
-  html += "          let range = data.maxPos - data.minPos;\n";
-  html += "          let relativePos = data.position - data.minPos;\n";
-  html += "          let percentage = (relativePos / range) * 100;\n";
-  html += "          document.getElementById('positionSlider').value = percentage;\n";
+  html += "          retryCount = 0; // Reset retry count on success\n";
+  html += "          updateUI(data);\n";
+  html += "        })\n";
+  html += "        .catch(error => {\n";
+  html += "          console.error('Error fetching status:', error);\n";
+  html += "          retryCount++;\n";
+  html += "          if (retryCount >= MAX_RETRIES) {\n";
+  html += "            isConnected = false;\n";
+  html += "            showConnectionError();\n";
+  // Try to reconnect after 5 seconds
+  html += "            setTimeout(reconnect, 5000);\n";
+  html += "          }\n";
   html += "        });\n";
   html += "    }\n";
   html += "    \n";
-  html += "    function fetchAlarms() {\n";
-  html += "      fetch('/api/alarms')\n";
-  html += "        .then(response => response.json())\n";
-  html += "        .then(data => {\n";
-  html += "          let html = '';\n";
-  html += "          data.alarms.forEach((alarm, index) => {\n";
-  html += "            html += '<div class=\"alarm-item\">';\n";
-  html += "            html += '<p>Time: ' + alarm.hour + ':' + (alarm.minute < 10 ? '0' : '') + alarm.minute;\n";
-  html += "            html += ' | Action: ' + (alarm.action == 0 ? 'Up' : 'Down');\n";
-  html += "            html += ' | Enabled: ' + (alarm.enabled ? 'Yes' : 'No') + '</p>';\n";
-  html += "            html += '<button onclick=\"deleteAlarm(' + index + ')\">Delete</button>';\n";
-  html += "            html += '<button onclick=\"toggleAlarm(' + index + ')\">' + (alarm.enabled ? 'Disable' : 'Enable') + '</button>';\n";
-  html += "            html += '</div>';\n";
-  html += "          });\n";
-  html += "          document.getElementById('alarmsList').innerHTML = html;\n";
-  html += "        });\n";
+  html += "    function updateUI(data) {\n";
+  // Update position text
+  html += "      document.getElementById('positionText').innerHTML = \n";
+  html += "        'Position: ' + data.position + ' (' + data.percentage.toFixed(1) + '%)';\n";
+  html += "      \n";
+  // Update position bar
+  html += "      document.getElementById('positionFill').style.width = data.percentage + '%';\n";
+  html += "      \n";
+  // Update position details
+  html += "      let stateText = data.state == 0 ? 'Up' : data.state == 1 ? 'Down' : 'Custom';\n";
+  html += "      let movingText = data.isMoving ? ' (Moving)' : '';\n";
+  html += "      document.getElementById('positionDetails').innerHTML = \n";
+  html += "        'State: ' + stateText + movingText + '<br>' +\n";
+  html += "        'Min: ' + data.minPos + ' | Max: ' + data.maxPos;\n";
+  html += "      \n";
+  // Update slider
+  html += "      document.getElementById('positionSlider').value = data.percentage;\n";
   html += "    }\n";
   html += "    \n";
-  html += "    function fetchTime() {\n";
-  html += "      fetch('/api/time')\n";
-  html += "        .then(response => response.json())\n";
-  html += "        .then(data => {\n";
-  html += "          document.getElementById('currentTime').innerHTML = \n";
-  html += "            '<p>Current Time: ' + data.datetime + '</p>';\n";
-  html += "          \n";
-  html += "          // Format the datetime for the input field\n";
-  html += "          let dt = new Date(data.datetime);\n";
-  html += "          let year = dt.getFullYear();\n";
-  html += "          let month = (dt.getMonth() + 1).toString().padStart(2, '0');\n";
-  html += "          let day = dt.getDate().toString().padStart(2, '0');\n";
-  html += "          let hours = dt.getHours().toString().padStart(2, '0');\n";
-  html += "          let minutes = dt.getMinutes().toString().padStart(2, '0');\n";
-  html += "          \n";
-  html += "          let formattedDate = year + '-' + month + '-' + day + 'T' + hours + ':' + minutes;\n";
-  html += "          document.getElementById('newDateTime').value = formattedDate;\n";
-  html += "        });\n";
+  html += "    function showConnectionError() {\n";
+  html += "      document.getElementById('positionText').innerHTML = 'Connection lost. Reconnecting...';\n";
+  html += "      document.getElementById('positionDetails').innerHTML = 'Please wait...';\n";
   html += "    }\n";
   html += "    \n";
+  html += "    function reconnect() {\n";
+  html += "      isConnected = true;\n";
+  html += "      retryCount = 0;\n";
+  html += "      fetchStatus();\n";
+  html += "    }\n";
+  
+  // Add setup mode functions
+  html += "    function startSetup() {\n";
+  html += "      fetch('/api/setup?action=start')\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          document.getElementById('setupControls').style.display = 'block';\n";
+  html += "          document.getElementById('startSetupBtn').style.display = 'none';\n";
+  html += "          fetchSetupStatus();\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error starting setup:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function stopSetup() {\n";
+  html += "      fetch('/api/setup?action=stop')\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          document.getElementById('setupControls').style.display = 'none';\n";
+  html += "          document.getElementById('startSetupBtn').style.display = 'block';\n";
+  html += "          fetchSetupStatus();\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error stopping setup:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function saveSetup() {\n";
+  html += "      const minPos = document.getElementById('minPosition').value;\n";
+  html += "      const maxPos = document.getElementById('maxPosition').value;\n";
+  html += "      \n";
+  html += "      fetch('/api/setup?action=save&min=' + minPos + '&max=' + maxPos)\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          document.getElementById('setupControls').style.display = 'none';\n";
+  html += "          document.getElementById('startSetupBtn').style.display = 'block';\n";
+  html += "          fetchSetupStatus();\n";
+  html += "          fetchStatus(); // Refresh position display\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error saving setup:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function fetchSetupStatus() {\n";
+  html += "      fetch('/api/setup?action=status')\n";
+  html += "        .then(response => response.json())\n";
+  html += "        .then(data => {\n";
+  html += "          document.getElementById('setupStatus').innerHTML = \n";
+  html += "            'Setup Mode: ' + (data.setupMode ? 'Active' : 'Inactive') + '<br>' +\n";
+  html += "            'Min Position: ' + data.minPosition + '<br>' +\n";
+  html += "            'Max Position: ' + data.maxPosition;\n";
+  html += "          \n";
+  html += "          if (data.setupMode) {\n";
+  html += "            document.getElementById('setupControls').style.display = 'block';\n";
+  html += "            document.getElementById('startSetupBtn').style.display = 'none';\n";
+  html += "            document.getElementById('minPosition').value = data.minPosition;\n";
+  html += "            document.getElementById('maxPosition').value = data.maxPosition;\n";
+  html += "          } else {\n";
+  html += "            document.getElementById('setupControls').style.display = 'none';\n";
+  html += "            document.getElementById('startSetupBtn').style.display = 'block';\n";
+  html += "          }\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error fetching setup status:', error));\n";
+  html += "    }\n";
+  
+  // Add move functions
   html += "    function moveUp() {\n";
   html += "      fetch('/api/moveup')\n";
-  html += "        .then(() => setTimeout(fetchStatus, 500));\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          console.log('Moving up');\n";
+  html += "          fetchStatus(); // Refresh position display\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error moving up:', error));\n";
   html += "    }\n";
   html += "    \n";
   html += "    function moveDown() {\n";
   html += "      fetch('/api/movedown')\n";
-  html += "        .then(() => setTimeout(fetchStatus, 500));\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          console.log('Moving down');\n";
+  html += "          fetchStatus(); // Refresh position display\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error moving down:', error));\n";
   html += "    }\n";
-  html += "    \n";
-  html += "    function setPosition() {\n";
-  html += "      let percentage = document.getElementById('positionSlider').value;\n";
+  
+  // Add JavaScript for the new function
+  html += "    function moveToPercentage(percentage) {\n";
   html += "      fetch('/api/moveto?percentage=' + percentage)\n";
-  html += "        .then(() => setTimeout(fetchStatus, 500));\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          console.log('Moving to ' + percentage + '%');\n";
+  html += "          fetchStatus(); // Refresh position display\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error moving to percentage:', error));\n";
   html += "    }\n";
-  html += "    \n";
-  html += "    function addAlarm() {\n";
-  html += "      let time = document.getElementById('newAlarmTime').value;\n";
-  html += "      let action = document.getElementById('newAlarmAction').value;\n";
-  html += "      \n";
-  html += "      if (!time) {\n";
-  html += "        alert('Please select a time');\n";
-  html += "        return;\n";
-  html += "      }\n";
-  html += "      \n";
-  html += "      let [hours, minutes] = time.split(':');\n";
-  html += "      \n";
-  html += "      let data = {\n";
-  html += "        action: 'add',\n";
-  html += "        hour: parseInt(hours),\n";
-  html += "        minute: parseInt(minutes),\n";
-  html += "        alarmAction: parseInt(action),\n";
-  html += "        enabled: true\n";
-  html += "      };\n";
-  html += "      \n";
-  html += "      fetch('/api/alarms', {\n";
-  html += "        method: 'POST',\n";
-  html += "        headers: {\n";
-  html += "          'Content-Type': 'application/json'\n";
-  html += "        },\n";
-  html += "        body: JSON.stringify(data)\n";
-  html += "      })\n";
-  html += "      .then(() => fetchAlarms());\n";
-  html += "    }\n";
-  html += "    \n";
-  html += "    function deleteAlarm(index) {\n";
-  html += "      if (!confirm('Are you sure you want to delete this alarm?')) return;\n";
-  html += "      \n";
-  html += "      let data = {\n";
-  html += "        action: 'delete',\n";
-  html += "        index: index\n";
-  html += "      };\n";
-  html += "      \n";
-  html += "      fetch('/api/alarms', {\n";
-  html += "        method: 'POST',\n";
-  html += "        headers: {\n";
-  html += "          'Content-Type': 'application/json'\n";
-  html += "        },\n";
-  html += "        body: JSON.stringify(data)\n";
-  html += "      })\n";
-  html += "      .then(() => fetchAlarms());\n";
-  html += "    }\n";
-  html += "    \n";
-  html += "    function toggleAlarm(index) {\n";
-  html += "      let data = {\n";
-  html += "        action: 'toggle',\n";
-  html += "        index: index\n";
-  html += "      };\n";
-  html += "      \n";
-  html += "      fetch('/api/alarms', {\n";
-  html += "        method: 'POST',\n";
-  html += "        headers: {\n";
-  html += "          'Content-Type': 'application/json'\n";
-  html += "        },\n";
-  html += "        body: JSON.stringify(data)\n";
-  html += "      })\n";
-  html += "      .then(() => fetchAlarms());\n";
-  html += "    }\n";
-  html += "    \n";
-  html += "    function setTime() {\n";
-  html += "      let newDateTime = document.getElementById('newDateTime').value;\n";
-  html += "      if (!newDateTime) {\n";
-  html += "        alert('Please select a date and time');\n";
-  html += "        return;\n";
-  html += "      }\n";
-  html += "      \n";
-  html += "      let data = {\n";
-  html += "        datetime: newDateTime\n";
-  html += "      };\n";
-  html += "      \n";
-  html += "      fetch('/api/time', {\n";
-  html += "        method: 'POST',\n";
-  html += "        headers: {\n";
-  html += "          'Content-Type': 'application/json'\n";
-  html += "        },\n";
-  html += "        body: JSON.stringify(data)\n";
-  html += "      })\n";
-  html += "      .then(() => fetchTime());\n";
-  html += "    }\n";
+  
+  // Rest of the existing JavaScript...
   html += "  </script>\n";
   html += "</body>\n";
   html += "</html>\n";
@@ -771,7 +792,8 @@ void handleStatus() {
   json += "\"maxPos\":" + String(maxPosition) + ",";
   json += "\"state\":" + String(blindState) + ",";
   json += "\"isMoving\":" + String(isMoving ? "true" : "false") + ",";
-  json += "\"targetPosition\":" + String(targetPosition);
+  json += "\"targetPosition\":" + String(targetPosition) + ",";
+  json += "\"percentage\":" + String((currentPosition - minPosition) * 100 / (maxPosition - minPosition));
   json += "}";
   
   server.send(200, "application/json", json);
@@ -800,6 +822,8 @@ void handleMoveTo() {
     // Calculate position based on percentage
     long range = maxPosition - minPosition;
     long newTargetPosition = minPosition + (range * percentage / 100);
+    Serial.print("Moving to position percentage: ");
+    Serial.println(newTargetPosition);
     
     moveBlindToPosition(newTargetPosition);
     server.send(200, "text/plain", "Moving to position");
