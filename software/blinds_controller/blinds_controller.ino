@@ -280,8 +280,16 @@ void checkEncoder() {
     long newTargetPosition = currentPosition + (encoderDifference * ENCODER_MULTIPLIER);
     
     // Limit position to min/max
-    if (newTargetPosition < minPosition) newTargetPosition = minPosition;
-    if (newTargetPosition > maxPosition) newTargetPosition = maxPosition;
+    if (newTargetPosition < minPosition) {
+      newTargetPosition = minPosition;
+      // Update encoder to match the min position
+      myEncoder.write(minPosition / ENCODER_MULTIPLIER);
+    }
+    if (newTargetPosition > maxPosition) {
+      newTargetPosition = maxPosition;
+      // Update encoder to match the max position
+      myEncoder.write(maxPosition / ENCODER_MULTIPLIER);
+    }
     
     // If position has really changed after limits
     if (newTargetPosition != currentPosition) {
