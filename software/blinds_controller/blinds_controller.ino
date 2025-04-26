@@ -29,7 +29,7 @@
 #define MAX_POS_ADDR 4
 #define CURRENT_POS_ADDR 8
 #define ALARM_COUNT_ADDR 12
-#define ALARM_DATA_START 16     // Each alarm takes 3 bytes (hour, minute, action)
+#define ALARM_DATA_START 16     // Each alarm takes 5 bytes (hour, minute, action, enabled, days)
 
 // Blind states
 #define BLIND_UP 0
@@ -75,6 +75,7 @@ struct Alarm {
   uint8_t minute;
   uint8_t action; // 0 = up, 1 = down
   bool enabled;
+  uint8_t days; // Bit field for days (0 = Sunday, 1 = Monday, etc.)
 };
 
 #define MAX_ALARMS 10
@@ -217,11 +218,12 @@ void loadSettingsFromEEPROM() {
   
   // Load all alarms
   for (int i = 0; i < alarmCount; i++) {
-    int addr = ALARM_DATA_START + (i * 4); // 4 bytes per alarm
+    int addr = ALARM_DATA_START + (i * 5); // 5 bytes per alarm
     alarms[i].hour = EEPROM.read(addr);
     alarms[i].minute = EEPROM.read(addr + 1);
     alarms[i].action = EEPROM.read(addr + 2);
     alarms[i].enabled = EEPROM.read(addr + 3) == 1;
+    alarms[i].days = EEPROM.read(addr + 4);
     
     // Validate values
     if (alarms[i].hour > 23 || alarms[i].minute > 59 || alarms[i].action > 1) {
@@ -254,11 +256,12 @@ void saveSettingsToEEPROM() {
   
   // Save all alarms
   for (int i = 0; i < alarmCount; i++) {
-    int addr = ALARM_DATA_START + (i * 4);
+    int addr = ALARM_DATA_START + (i * 5); // 5 bytes per alarm (hour, minute, action, enabled, days)
     EEPROM.write(addr, alarms[i].hour);
     EEPROM.write(addr + 1, alarms[i].minute);
     EEPROM.write(addr + 2, alarms[i].action);
     EEPROM.write(addr + 3, alarms[i].enabled ? 1 : 0);
+    EEPROM.write(addr + 4, alarms[i].days);
   }
   
   EEPROM.commit();
@@ -511,6 +514,7 @@ void moveStepperBySteps(long steps) {
 
 void checkAlarms() {
   DateTime now = rtc.now();
+  int currentDay = now.dayOfTheWeek(); // 0 = Sunday, 1 = Monday, etc.
   
   // Debug print current time
   Serial.print("Current time: ");
@@ -523,7 +527,8 @@ void checkAlarms() {
   for (int i = 0; i < alarmCount; i++) {
     if (alarms[i].enabled && 
         alarms[i].hour == now.hour() && 
-        alarms[i].minute == now.minute()) {
+        alarms[i].minute == now.minute() &&
+        (alarms[i].days & (1 << currentDay))) { // Check if alarm is set for current day
       
       Serial.print("Alarm triggered: ");
       Serial.print(alarms[i].hour);
@@ -621,6 +626,43 @@ void handleRoot() {
   html += "    </div>\n";
   html += "  </div>\n";
   
+  // Add Alarms Section
+  html += "  <div class=\"alarms-section\" style=\"margin-top: 20px; padding: 20px; background-color: #f5f5f5; border-radius: 5px;\">\n";
+  html += "    <h2>Alarms</h2>\n";
+  html += "    <div id=\"alarmsList\">Loading alarms...</div>\n";
+  html += "    <div class=\"add-alarm\" style=\"margin-top: 20px;\">\n";
+  html += "      <h3>Add New Alarm</h3>\n";
+  html += "      <div style=\"display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;\">\n";
+  html += "        <div>\n";
+  html += "          <label>Time:</label>\n";
+  html += "          <input type=\"time\" id=\"alarmTime\" style=\"width: 100%;\">\n";
+  html += "        </div>\n";
+  html += "        <div>\n";
+  html += "          <label>Action:</label>\n";
+  html += "          <select id=\"alarmAction\" style=\"width: 100%;\">\n";
+  html += "            <option value=\"0\">Open Blinds</option>\n";
+  html += "            <option value=\"1\">Close Blinds</option>\n";
+  html += "          </select>\n";
+  html += "        </div>\n";
+  html += "        <div style=\"grid-column: span 2;\">\n";
+  html += "          <label>Days:</label>\n";
+  html += "          <div style=\"display: flex; gap: 10px; margin-top: 5px;\">\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"0\"> Sun</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"1\"> Mon</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"2\"> Tue</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"3\"> Wed</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"4\"> Thu</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"5\"> Fri</label>\n";
+  html += "            <label><input type=\"checkbox\" class=\"day-checkbox\" value=\"6\"> Sat</label>\n";
+  html += "          </div>\n";
+  html += "        </div>\n";
+  html += "        <div style=\"grid-column: span 2;\">\n";
+  html += "          <button class=\"btn\" onclick=\"addAlarm()\">Add Alarm</button>\n";
+  html += "        </div>\n";
+  html += "      </div>\n";
+  html += "    </div>\n";
+  html += "  </div>\n";
+  
   // Remove all setup mode related JavaScript
   html += "  <script>\n";
   html += "    let isConnected = true;\n";
@@ -633,6 +675,7 @@ void handleRoot() {
   html += "    // Load initial data\n";
   html += "    window.onload = function() {\n";
   html += "      fetchStatus();\n";
+  html += "      fetchAlarms();\n";
   html += "      startPolling();\n";
   html += "      \n";
   html += "      // Add event listeners for input focus\n";
@@ -725,6 +768,109 @@ void handleRoot() {
   html += "        })\n";
   html += "        .catch(error => console.error('Error moving to percentage:', error));\n";
   html += "    }\n";
+  html += "    \n";
+  html += "    function fetchAlarms() {\n";
+  html += "      fetch('/api/alarms')\n";
+  html += "        .then(response => response.json())\n";
+  html += "        .then(data => {\n";
+  html += "          const alarmsList = document.getElementById('alarmsList');\n";
+  html += "          if (data.alarms.length === 0) {\n";
+  html += "            alarmsList.innerHTML = '<p>No alarms set</p>';\n";
+  html += "            return;\n";
+  html += "          }\n";
+  html += "          \n";
+  html += "          let html = '<div class=\"alarms-grid\">';\n";
+  html += "          data.alarms.forEach((alarm, index) => {\n";
+  html += "            const time = new Date();\n";
+  html += "            time.setHours(alarm.hour, alarm.minute);\n";
+  html += "            const timeStr = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });\n";
+  html += "            const actionStr = alarm.action === 0 ? 'Open' : 'Close';\n";
+  html += "            const daysStr = alarm.days.map(day => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][day]).join(', ');\n";
+  html += "            \n";
+  html += "            html += `<div class=\"alarm-item\" style=\"padding: 10px; border: 1px solid #ddd; margin-bottom: 10px; border-radius: 5px;\">`;\n";
+  html += "            html += `<div style=\"display: flex; justify-content: space-between; align-items: center;\">`;\n";
+  html += "            html += `<div>`;\n";
+  html += "            html += `<strong>${timeStr}</strong> - ${actionStr} Blinds<br>`;\n";
+  html += "            html += `<small>${daysStr}</small>`;\n";
+  html += "            html += `</div>`;\n";
+  html += "            html += `<div>`;\n";
+  html += "            html += `<button class=\"btn\" onclick=\"toggleAlarm(${index})\" style=\"margin-right: 5px;\">${alarm.enabled ? 'Disable' : 'Enable'}</button>`;\n";
+  html += "            html += `<button class=\"btn\" onclick=\"deleteAlarm(${index})\">Delete</button>`;\n";
+  html += "            html += `</div>`;\n";
+  html += "            html += `</div>`;\n";
+  html += "            html += `</div>`;\n";
+  html += "          });\n";
+  html += "          html += '</div>';\n";
+  html += "          alarmsList.innerHTML = html;\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error fetching alarms:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function addAlarm() {\n";
+  html += "      const timeInput = document.getElementById('alarmTime');\n";
+  html += "      const actionSelect = document.getElementById('alarmAction');\n";
+  html += "      const dayCheckboxes = document.querySelectorAll('.day-checkbox:checked');\n";
+  html += "      \n";
+  html += "      if (!timeInput.value || dayCheckboxes.length === 0) {\n";
+  html += "        alert('Please select a time and at least one day');\n";
+  html += "        return;\n";
+  html += "      }\n";
+  html += "      \n";
+  html += "      const [hours, minutes] = timeInput.value.split(':');\n";
+  html += "      const days = Array.from(dayCheckboxes).map(cb => parseInt(cb.value));\n";
+  html += "      \n";
+  html += "      const alarmData = {\n";
+  html += "        action: 'add',\n";
+  html += "        hour: parseInt(hours),\n";
+  html += "        minute: parseInt(minutes),\n";
+  html += "        alarmAction: parseInt(actionSelect.value),\n";
+  html += "        days: days\n";
+  html += "      };\n";
+  html += "      \n";
+  html += "      fetch('/api/alarms', {\n";
+  html += "        method: 'POST',\n";
+  html += "        headers: {\n";
+  html += "          'Content-Type': 'application/json'\n";
+  html += "        },\n";
+  html += "        body: JSON.stringify(alarmData)\n";
+  html += "      })\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          timeInput.value = '';\n";
+  html += "          actionSelect.value = '0';\n";
+  html += "          document.querySelectorAll('.day-checkbox').forEach(cb => cb.checked = false);\n";
+  html += "          fetchAlarms();\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error adding alarm:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function toggleAlarm(index) {\n";
+  html += "      fetch('/api/alarms', {\n";
+  html += "        method: 'POST',\n";
+  html += "        headers: {\n";
+  html += "          'Content-Type': 'application/json'\n";
+  html += "        },\n";
+  html += "        body: JSON.stringify({ action: 'toggle', index: index })\n";
+  html += "      })\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => fetchAlarms())\n";
+  html += "        .catch(error => console.error('Error toggling alarm:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function deleteAlarm(index) {\n";
+  html += "      if (!confirm('Are you sure you want to delete this alarm?')) return;\n";
+  html += "      \n";
+  html += "      fetch('/api/alarms', {\n";
+  html += "        method: 'POST',\n";
+  html += "        headers: {\n";
+  html += "          'Content-Type': 'application/json'\n";
+  html += "        },\n";
+  html += "        body: JSON.stringify({ action: 'delete', index: index })\n";
+  html += "      })\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => fetchAlarms())\n";
+  html += "        .catch(error => console.error('Error deleting alarm:', error));\n";
+  html += "    }\n";
   html += "  </script>\n";
   html += "</body>\n";
   html += "</html>\n";
@@ -780,7 +926,20 @@ void handleGetAlarms() {
     json += "\"hour\":" + String(alarms[i].hour) + ",";
     json += "\"minute\":" + String(alarms[i].minute) + ",";
     json += "\"action\":" + String(alarms[i].action) + ",";
-    json += "\"enabled\":" + String(alarms[i].enabled ? "true" : "false");
+    json += "\"enabled\":" + String(alarms[i].enabled ? "true" : "false") + ",";
+    
+    // Convert days bit field to array
+    json += "\"days\":[";
+    bool firstDay = true;
+    for (int day = 0; day < 7; day++) {
+      if (alarms[i].days & (1 << day)) {
+        if (!firstDay) json += ",";
+        json += String(day);
+        firstDay = false;
+      }
+    }
+    json += "]";
+    
     json += "}";
   }
   
@@ -823,11 +982,28 @@ void handleSetAlarms() {
       }
       int alarmAction = json.substring(alarmActionStartIndex, alarmActionEndIndex).toInt();
       
+      // Extract days
+      int daysStartIndex = json.indexOf("\"days\":[") + 8;
+      int daysEndIndex = json.indexOf("]", daysStartIndex);
+      String daysStr = json.substring(daysStartIndex, daysEndIndex);
+      
+      // Parse days array
+      uint8_t days = 0;
+      int currentIndex = 0;
+      while (currentIndex < daysStr.length()) {
+        int nextComma = daysStr.indexOf(",", currentIndex);
+        if (nextComma == -1) nextComma = daysStr.length();
+        int day = daysStr.substring(currentIndex, nextComma).toInt();
+        days |= (1 << day); // Set the bit for this day
+        currentIndex = nextComma + 1;
+      }
+      
       // Create new alarm
       alarms[alarmCount].hour = hour;
       alarms[alarmCount].minute = minute;
       alarms[alarmCount].action = alarmAction;
       alarms[alarmCount].enabled = true;
+      alarms[alarmCount].days = days;
       
       alarmCount++;
       
