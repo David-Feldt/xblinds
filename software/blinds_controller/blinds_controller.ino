@@ -21,6 +21,7 @@
 #define MAX_SPEED 2000          // Slower maximum speed for reliability
 #define MIN_SPEED 4000          // Slower minimum speed for reliability
 #define STEP_DELAY 100          // Base delay between steps in microseconds
+#define ENCODER_MULTIPLIER 10   // How many steps per encoder click
 
 // EEPROM addresses
 #define EEPROM_SIZE 512
@@ -229,8 +230,8 @@ void loadSettingsFromEEPROM() {
     }
   }
   
-  // Initialize encoder with current position
-  myEncoder.write(currentPosition);
+  // Initialize encoder with current position (at 1/ENCODER_MULTIPLIER scale)
+  myEncoder.write(currentPosition / ENCODER_MULTIPLIER);
   
   Serial.println("Settings loaded from EEPROM:");
   Serial.print("Min Position: ");
@@ -239,6 +240,8 @@ void loadSettingsFromEEPROM() {
   Serial.println(maxPosition);
   Serial.print("Current Position: ");
   Serial.println(currentPosition);
+  Serial.print("Encoder Position: ");
+  Serial.println(currentPosition / ENCODER_MULTIPLIER);
   Serial.print("Alarm Count: ");
   Serial.println(alarmCount);
 }
@@ -263,23 +266,32 @@ void saveSettingsToEEPROM() {
 }
 
 void checkEncoder() {
-  long newPosition = myEncoder.read();
+  long encoderPosition = myEncoder.read();
+  long expectedEncoderPosition = currentPosition / ENCODER_MULTIPLIER;
   
-  // If position has changed
-  if (newPosition != currentPosition) {
+  // If encoder position doesn't match expected position
+  if (encoderPosition != expectedEncoderPosition) {
     lastEncoderMove = millis();
     
+    // Calculate the difference in encoder clicks
+    long encoderDifference = encoderPosition - expectedEncoderPosition;
+    
+    // Calculate the new target position
+    long newTargetPosition = currentPosition + (encoderDifference * ENCODER_MULTIPLIER);
+    
     // Limit position to min/max
-    if (newPosition < minPosition) newPosition = minPosition;
-    if (newPosition > maxPosition) newPosition = maxPosition;
+    if (newTargetPosition < minPosition) newTargetPosition = minPosition;
+    if (newTargetPosition > maxPosition) newTargetPosition = maxPosition;
     
     // If position has really changed after limits
-    if (newPosition != currentPosition) {
-      Serial.print("Moving to position: ");
-      Serial.println(newPosition);
+    if (newTargetPosition != currentPosition) {
+      Serial.print("Encoder moved. Current: ");
+      Serial.print(currentPosition);
+      Serial.print(", Target: ");
+      Serial.println(newTargetPosition);
       
-      moveBlindToPosition(newPosition);
-      currentPosition = newPosition;
+      moveBlindToPosition(newTargetPosition);
+      currentPosition = newTargetPosition;
       
       // Save current position to EEPROM
       EEPROM.put(CURRENT_POS_ADDR, currentPosition);
@@ -348,7 +360,7 @@ void updateMotor() {
     
     // Take a single step with proper timing
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(STEP_DELAY); // Fixed delay for reliable stepping
+    delayMicroseconds(STEP_DELAY);
     digitalWrite(STEP_PIN, LOW);
     
     // Update position
@@ -358,8 +370,8 @@ void updateMotor() {
       currentPosition--;
     }
     
-    // Update encoder position to match motor position
-    myEncoder.write(currentPosition);
+    // Update encoder position to match motor position (at 1/ENCODER_MULTIPLIER scale)
+    myEncoder.write(currentPosition / ENCODER_MULTIPLIER);
     
     // Check if we've reached the target
     if (currentPosition == targetPosition) {
@@ -378,7 +390,7 @@ void updateMotor() {
       }
     }
     
-    // Simpler speed control
+    // Speed control
     if (isMoving) {
       long stepsRemaining = abs(targetPosition - currentPosition);
       if (stepsRemaining > 100) {
@@ -520,8 +532,6 @@ void setupWebServer() {
   
   // API endpoints
   server.on("/api/status", HTTP_GET, handleStatus);
-  server.on("/api/moveup", HTTP_GET, handleMoveUp);
-  server.on("/api/movedown", HTTP_GET, handleMoveDown);
   server.on("/api/moveto", HTTP_GET, handleMoveTo);
   server.on("/api/alarms", HTTP_GET, handleGetAlarms);
   server.on("/api/alarms", HTTP_POST, handleSetAlarms);
@@ -546,7 +556,6 @@ void handleRoot() {
   html += "    .btn { background-color: #4CAF50; border: none; color: white; padding: 15px 32px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; }\n";
   html += "    .btn-up { background-color: #2196F3; }\n";
   html += "    .btn-down { background-color: #f44336; }\n";
-  html += "    .slider { width: 100%; }\n";
   html += "    .alarm-item { margin-bottom: 10px; border: 1px solid #ddd; padding: 10px; }\n";
   html += "    .setup-mode { background-color: #ffeb3b; padding: 10px; margin: 10px 0; }\n";
   html += "    .setup-mode input { width: 100px; margin: 0 10px; }\n";
@@ -573,7 +582,7 @@ void handleRoot() {
   html += "    <p id=\"positionDetails\">Loading details...</p>\n";
   html += "  </div>\n";
   
-  // Replace slider and up/down buttons with percentage buttons
+  // Percentage buttons
   html += "  <div class=\"percentage-controls\">\n";
   html += "    <h2>Move Blinds</h2>\n";
   html += "    <div class=\"button-group\">\n";
@@ -599,17 +608,7 @@ void handleRoot() {
   html += "    <button class=\"btn\" id=\"startSetupBtn\" onclick=\"startSetup()\">Enter Setup Mode</button>\n";
   html += "  </div>\n";
   
-  html += "  <div>\n";
-  html += "    <button class=\"btn btn-up\" onclick=\"moveUp()\">Move Up</button>\n";
-  html += "    <button class=\"btn btn-down\" onclick=\"moveDown()\">Move Down</button>\n";
-  html += "  </div>\n";
-  
-  html += "  <div>\n";
-  html += "    <h2>Manual Position</h2>\n";
-  html += "    <input type=\"range\" min=\"0\" max=\"100\" value=\"0\" class=\"slider\" id=\"positionSlider\">\n";
-  html += "    <button class=\"btn\" onclick=\"setPosition()\">Set Position</button>\n";
-  html += "  </div>\n";
-  
+
   // Add improved JavaScript for position updates
   html += "  <script>\n";
   html += "    let isConnected = true;\n";
@@ -669,9 +668,6 @@ void handleRoot() {
   html += "      document.getElementById('positionDetails').innerHTML = \n";
   html += "        'State: ' + stateText + movingText + '<br>' +\n";
   html += "        'Min: ' + data.minPos + ' | Max: ' + data.maxPos;\n";
-  html += "      \n";
-  // Update slider
-  html += "      document.getElementById('positionSlider').value = data.percentage;\n";
   html += "    }\n";
   html += "    \n";
   html += "    function showConnectionError() {\n";
@@ -744,28 +740,7 @@ void handleRoot() {
   html += "        })\n";
   html += "        .catch(error => console.error('Error fetching setup status:', error));\n";
   html += "    }\n";
-  
-  // Add move functions
-  html += "    function moveUp() {\n";
-  html += "      fetch('/api/moveup')\n";
-  html += "        .then(response => response.text())\n";
-  html += "        .then(() => {\n";
-  html += "          console.log('Moving up');\n";
-  html += "          fetchStatus(); // Refresh position display\n";
-  html += "        })\n";
-  html += "        .catch(error => console.error('Error moving up:', error));\n";
-  html += "    }\n";
-  html += "    \n";
-  html += "    function moveDown() {\n";
-  html += "      fetch('/api/movedown')\n";
-  html += "        .then(response => response.text())\n";
-  html += "        .then(() => {\n";
-  html += "          console.log('Moving down');\n";
-  html += "          fetchStatus(); // Refresh position display\n";
-  html += "        })\n";
-  html += "        .catch(error => console.error('Error moving down:', error));\n";
-  html += "    }\n";
-  
+    
   // Add JavaScript for the new function
   html += "    function moveToPercentage(percentage) {\n";
   html += "      fetch('/api/moveto?percentage=' + percentage)\n";
@@ -799,15 +774,6 @@ void handleStatus() {
   server.send(200, "application/json", json);
 }
 
-void handleMoveUp() {
-  moveBlindUp();
-  server.send(200, "text/plain", "Moving up");
-}
-
-void handleMoveDown() {
-  moveBlindDown();
-  server.send(200, "text/plain", "Moving down");
-}
 
 void handleMoveTo() {
   if (server.hasArg("percentage")) {

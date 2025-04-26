@@ -27,11 +27,13 @@ show_usage() {
     echo "  -b, --build     Build the sketch"
     echo "  -u, --upload    Upload the sketch"
     echo "  -m, --monitor   Monitor serial output"
+    echo "  -a, --all       Build, upload and monitor (all in one)"
     echo "  -s, --sketch    Specify sketch name (default: $SKETCH_NAME)"
     echo "  -h, --help      Show this help message"
     echo ""
     echo "Example:"
     echo "  $0 -b -u -m    # Build, upload and monitor"
+    echo "  $0 -a          # Build, upload and monitor in one command"
     echo "  $0 -s my_sketch -b  # Build specific sketch"
 }
 
@@ -47,6 +49,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -m|--monitor)
+            MONITOR=true
+            shift
+            ;;
+        -a|--all)
+            BUILD=true
+            UPLOAD=true
             MONITOR=true
             shift
             ;;
