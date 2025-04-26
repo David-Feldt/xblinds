@@ -352,14 +352,6 @@ void moveBlindToPosition(long newTargetPosition) {
   // Set initial speed
   stepDelay = MAX_SPEED;
   
-  // Debug output
-  Serial.print("Moving to position. Current: ");
-  Serial.print(currentPosition);
-  Serial.print(", Target: ");
-  Serial.print(targetPosition);
-  Serial.print(", Direction: ");
-  Serial.println(direction ? "UP" : "DOWN");
-  
   // Small delay to ensure direction is set
   delayMicroseconds(100);
 }
@@ -605,6 +597,16 @@ void handleRoot() {
   html += "      <div class=\"position-fill\" id=\"positionFill\" style=\"width: 0%\"></div>\n";
   html += "    </div>\n";
   html += "    <p id=\"positionDetails\">Loading details...</p>\n";
+  html += "    <div class=\"setup-controls\" style=\"margin-top: 20px; padding-top: 20px; border-top: 1px solid #ccc;\">\n";
+  html += "      <h3>Position Limits</h3>\n";
+  html += "      <div style=\"display: flex; align-items: center; gap: 10px; margin-bottom: 10px;\">\n";
+  html += "        <label>Min Position:</label>\n";
+  html += "        <input type=\"number\" id=\"minPosition\" style=\"width: 100px;\" value=\"0\">\n";
+  html += "        <label>Max Position:</label>\n";
+  html += "        <input type=\"number\" id=\"maxPosition\" style=\"width: 100px;\" value=\"1000\">\n";
+  html += "        <button class=\"btn\" onclick=\"saveSetup()\">Save Limits</button>\n";
+  html += "      </div>\n";
+  html += "    </div>\n";
   html += "  </div>\n";
   
   // Percentage buttons
@@ -619,34 +621,25 @@ void handleRoot() {
   html += "    </div>\n";
   html += "  </div>\n";
   
-  // Rest of the existing HTML...
-  html += "  <div class=\"setup-mode\">\n";
-  html += "    <h2>Setup Mode</h2>\n";
-  html += "    <div id=\"setupStatus\">Loading setup status...</div>\n";
-  html += "    <div id=\"setupControls\" style=\"display: none;\">\n";
-  html += "      <p>Set the minimum and maximum positions:</p>\n";
-  html += "      <input type=\"number\" id=\"minPosition\" placeholder=\"Min Position\">\n";
-  html += "      <input type=\"number\" id=\"maxPosition\" placeholder=\"Max Position\">\n";
-  html += "      <button class=\"btn\" onclick=\"saveSetup()\">Save Settings</button>\n";
-  html += "      <button class=\"btn\" onclick=\"stopSetup()\">Cancel</button>\n";
-  html += "    </div>\n";
-  html += "    <button class=\"btn\" id=\"startSetupBtn\" onclick=\"startSetup()\">Enter Setup Mode</button>\n";
-  html += "  </div>\n";
-  
-
-  // Add improved JavaScript for position updates
+  // Remove all setup mode related JavaScript
   html += "  <script>\n";
   html += "    let isConnected = true;\n";
   html += "    let retryCount = 0;\n";
   html += "    const MAX_RETRIES = 5;\n";
   html += "    const POLL_INTERVAL = 500; // Poll every 500ms\n";
+  html += "    let isEditingMin = false;\n";
+  html += "    let isEditingMax = false;\n";
   html += "    \n";
   html += "    // Load initial data\n";
   html += "    window.onload = function() {\n";
   html += "      fetchStatus();\n";
-  html += "      fetchSetupStatus();\n";
-  // Start polling
   html += "      startPolling();\n";
+  html += "      \n";
+  html += "      // Add event listeners for input focus\n";
+  html += "      document.getElementById('minPosition').addEventListener('focus', function() { isEditingMin = true; });\n";
+  html += "      document.getElementById('minPosition').addEventListener('blur', function() { isEditingMin = false; });\n";
+  html += "      document.getElementById('maxPosition').addEventListener('focus', function() { isEditingMax = true; });\n";
+  html += "      document.getElementById('maxPosition').addEventListener('blur', function() { isEditingMax = false; });\n";
   html += "    };\n";
   html += "    \n";
   html += "    function startPolling() {\n";
@@ -673,21 +666,15 @@ void handleRoot() {
   html += "          if (retryCount >= MAX_RETRIES) {\n";
   html += "            isConnected = false;\n";
   html += "            showConnectionError();\n";
-  // Try to reconnect after 5 seconds
   html += "            setTimeout(reconnect, 5000);\n";
   html += "          }\n";
   html += "        });\n";
   html += "    }\n";
   html += "    \n";
   html += "    function updateUI(data) {\n";
-  // Update position text
   html += "      document.getElementById('positionText').innerHTML = \n";
   html += "        'Position: ' + data.position + ' (' + data.percentage.toFixed(1) + '%)';\n";
-  html += "      \n";
-  // Update position bar
   html += "      document.getElementById('positionFill').style.width = data.percentage + '%';\n";
-  html += "      \n";
-  // Update position details
   html += "      let stateText = data.state == 0 ? 'Up' : data.state == 1 ? 'Down' : 'Custom';\n";
   html += "      let movingText = data.isMoving ? ' (Moving)' : '';\n";
   html += "      document.getElementById('positionDetails').innerHTML = \n";
@@ -705,68 +692,30 @@ void handleRoot() {
   html += "      retryCount = 0;\n";
   html += "      fetchStatus();\n";
   html += "    }\n";
-  
-  // Add setup mode functions
-  html += "    function startSetup() {\n";
-  html += "      fetch('/api/setup?action=start')\n";
-  html += "        .then(response => response.text())\n";
-  html += "        .then(() => {\n";
-  html += "          document.getElementById('setupControls').style.display = 'block';\n";
-  html += "          document.getElementById('startSetupBtn').style.display = 'none';\n";
-  html += "          fetchSetupStatus();\n";
-  html += "        })\n";
-  html += "        .catch(error => console.error('Error starting setup:', error));\n";
-  html += "    }\n";
-  html += "    \n";
-  html += "    function stopSetup() {\n";
-  html += "      fetch('/api/setup?action=stop')\n";
-  html += "        .then(response => response.text())\n";
-  html += "        .then(() => {\n";
-  html += "          document.getElementById('setupControls').style.display = 'none';\n";
-  html += "          document.getElementById('startSetupBtn').style.display = 'block';\n";
-  html += "          fetchSetupStatus();\n";
-  html += "        })\n";
-  html += "        .catch(error => console.error('Error stopping setup:', error));\n";
-  html += "    }\n";
   html += "    \n";
   html += "    function saveSetup() {\n";
   html += "      const minPos = document.getElementById('minPosition').value;\n";
   html += "      const maxPos = document.getElementById('maxPosition').value;\n";
   html += "      \n";
-  html += "      fetch('/api/setup?action=save&min=' + minPos + '&max=' + maxPos)\n";
+  html += "      // If either input is empty, use the current values from the server\n";
+  html += "      fetch('/api/status')\n";
+  html += "        .then(response => response.json())\n";
+  html += "        .then(data => {\n";
+  html += "          const finalMinPos = minPos === '' ? data.minPos : minPos;\n";
+  html += "          const finalMaxPos = maxPos === '' ? data.maxPos : maxPos;\n";
+  html += "          \n";
+  html += "          return fetch('/api/setup?action=save&min=' + finalMinPos + '&max=' + finalMaxPos);\n";
+  html += "        })\n";
   html += "        .then(response => response.text())\n";
   html += "        .then(() => {\n";
-  html += "          document.getElementById('setupControls').style.display = 'none';\n";
-  html += "          document.getElementById('startSetupBtn').style.display = 'block';\n";
-  html += "          fetchSetupStatus();\n";
+  html += "          // Clear the input boxes after saving\n";
+  html += "          document.getElementById('minPosition').value = '';\n";
+  html += "          document.getElementById('maxPosition').value = '';\n";
   html += "          fetchStatus(); // Refresh position display\n";
   html += "        })\n";
   html += "        .catch(error => console.error('Error saving setup:', error));\n";
   html += "    }\n";
   html += "    \n";
-  html += "    function fetchSetupStatus() {\n";
-  html += "      fetch('/api/setup?action=status')\n";
-  html += "        .then(response => response.json())\n";
-  html += "        .then(data => {\n";
-  html += "          document.getElementById('setupStatus').innerHTML = \n";
-  html += "            'Setup Mode: ' + (data.setupMode ? 'Active' : 'Inactive') + '<br>' +\n";
-  html += "            'Min Position: ' + data.minPosition + '<br>' +\n";
-  html += "            'Max Position: ' + data.maxPosition;\n";
-  html += "          \n";
-  html += "          if (data.setupMode) {\n";
-  html += "            document.getElementById('setupControls').style.display = 'block';\n";
-  html += "            document.getElementById('startSetupBtn').style.display = 'none';\n";
-  html += "            document.getElementById('minPosition').value = data.minPosition;\n";
-  html += "            document.getElementById('maxPosition').value = data.maxPosition;\n";
-  html += "          } else {\n";
-  html += "            document.getElementById('setupControls').style.display = 'none';\n";
-  html += "            document.getElementById('startSetupBtn').style.display = 'block';\n";
-  html += "          }\n";
-  html += "        })\n";
-  html += "        .catch(error => console.error('Error fetching setup status:', error));\n";
-  html += "    }\n";
-    
-  // Add JavaScript for the new function
   html += "    function moveToPercentage(percentage) {\n";
   html += "      fetch('/api/moveto?percentage=' + percentage)\n";
   html += "        .then(response => response.text())\n";
@@ -776,8 +725,6 @@ void handleRoot() {
   html += "        })\n";
   html += "        .catch(error => console.error('Error moving to percentage:', error));\n";
   html += "    }\n";
-  
-  // Rest of the existing JavaScript...
   html += "  </script>\n";
   html += "</body>\n";
   html += "</html>\n";
