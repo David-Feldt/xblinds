@@ -291,7 +291,6 @@ void checkEncoder() {
       Serial.println(newTargetPosition);
       
       moveBlindToPosition(newTargetPosition);
-      currentPosition = newTargetPosition;
       
       // Save current position to EEPROM
       EEPROM.put(CURRENT_POS_ADDR, currentPosition);
@@ -345,6 +344,14 @@ void moveBlindToPosition(long newTargetPosition) {
   // Set initial speed
   stepDelay = MAX_SPEED;
   
+  // Debug output
+  Serial.print("Moving to position. Current: ");
+  Serial.print(currentPosition);
+  Serial.print(", Target: ");
+  Serial.print(targetPosition);
+  Serial.print(", Direction: ");
+  Serial.println(direction ? "UP" : "DOWN");
+  
   // Small delay to ensure direction is set
   delayMicroseconds(100);
 }
@@ -372,6 +379,16 @@ void updateMotor() {
     
     // Update encoder position to match motor position (at 1/ENCODER_MULTIPLIER scale)
     myEncoder.write(currentPosition / ENCODER_MULTIPLIER);
+    
+    // Debug output for motor movement
+    if (currentPosition % 100 == 0) {  // Print every 100 steps
+      Serial.print("Motor position: ");
+      Serial.print(currentPosition);
+      Serial.print(", Target: ");
+      Serial.print(targetPosition);
+      Serial.print(", Steps remaining: ");
+      Serial.println(abs(targetPosition - currentPosition));
+    }
     
     // Check if we've reached the target
     if (currentPosition == targetPosition) {
