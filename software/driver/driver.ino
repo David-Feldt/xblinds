@@ -9,10 +9,12 @@
 #define SCL_PIN D3
 #define ENCODER_CLK D2
 #define ENCODER_DT D1
+#define ENCODER_PIN D7  // New pin encoder
 
 RTC_DS3231 rtc;
 Encoder myEnc(ENCODER_CLK, ENCODER_DT);
 long oldPosition = -999;
+int encoderPinState = 0;  // Variable to store pin encoder state
 
 void setup() {
   // Initialize serial for logging
@@ -38,8 +40,9 @@ void setup() {
   // Declare pins as output
   pinMode(stepPin, OUTPUT);
   pinMode(dirPin, OUTPUT);
+  pinMode(ENCODER_PIN, INPUT_PULLUP);  // Set up the new encoder pin
 
-  Serial.println("Stepper, RTC, and Encoder initialized.");
+  Serial.println("Stepper, RTC, and Encoders initialized.");
 }
 
 void stepMotor(int steps, int delayMicrosec) {
@@ -75,6 +78,14 @@ void loop() {
     oldPosition = newPosition;
     Serial.print("Encoder position: ");
     Serial.println(newPosition);
+  }
+
+  // Test the pin encoder
+  int newPinState = digitalRead(ENCODER_PIN);
+  if (newPinState != encoderPinState) {
+    encoderPinState = newPinState;
+    Serial.print("Pin Encoder (D7) State Changed: ");
+    Serial.println(encoderPinState == HIGH ? "HIGH" : "LOW");
   }
 
   Serial.println("Direction: Clockwise | Speed: Slow | Revolutions: 1");
