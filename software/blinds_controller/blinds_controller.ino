@@ -5,6 +5,20 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
+#include <ESP8266HTTPClient.h>
+
+// Add watchdog timer
+#include <ESP8266WiFiMulti.h>
+ESP8266WiFiMulti wifiMulti;
+
+// Server health check variables
+unsigned long lastServerCheck = 0;
+const unsigned long SERVER_CHECK_INTERVAL = 30000; // Check every 30 seconds
+bool serverRunning = false;
+int serverRestartCount = 0;
+const int MAX_RESTARTS = 5;
+const unsigned long RESTART_COOLDOWN = 300000; // 5 minutes between restart attempts
+unsigned long lastRestartAttempt = 0;
 
 // Pin Definitions
 #define DIR_PIN D5      // Direction pin for stepper motor
@@ -17,11 +31,11 @@
 
 // Motor settings
 #define STEPS_PER_REVOLUTION 200
-#define MICROSTEPS 16
-#define MAX_SPEED 2000          // Slower maximum speed for reliability
-#define MIN_SPEED 4000          // Slower minimum speed for reliability
-#define STEP_DELAY 100          // Base delay between steps in microseconds
-#define ENCODER_MULTIPLIER 10   // How many steps per encoder click
+#define MICROSTEPS 1  // Full steps for maximum torque
+#define MAX_SPEED 5000          // Very slow maximum speed for maximum torque
+#define MIN_SPEED 8000          // Very slow minimum speed for maximum torque
+#define STEP_DELAY 500          // Much longer base delay between steps for maximum torque
+#define ENCODER_MULTIPLIER 200   // How many steps per encoder click
 
 // EEPROM addresses
 #define EEPROM_SIZE 512
@@ -87,6 +101,11 @@ bool webSetupMode = false;
 long setupMinPosition = 0;
 long setupMaxPosition = 1000;
 
+// Add after other global variables
+bool isAPMode = false;
+const char* AP_SSID = "blinds";
+const char* AP_PASSWORD = ""; // You can change this password
+
 void setup() {
   // Initialize serial for debugging
   Serial.begin(115200);
@@ -119,38 +138,44 @@ void setup() {
   // Load saved values from EEPROM
   loadSettingsFromEEPROM();
   
-  // Initialize WiFi
-  WiFi.begin(ssid, password);
+  // Initialize WiFi with multiple networks
+  wifiMulti.addAP(ssid, password);
+  // Add backup network if available
+  // wifiMulti.addAP("backup_ssid", "backup_password");
+  
   Serial.print("Connecting to WiFi");
   
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+  while (wifiMulti.run() != WL_CONNECTED && attempts < 20) {
     delay(500);
     Serial.print(".");
     attempts++;
   }
   
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifiMulti.run() == WL_CONNECTED) {
     Serial.println("\nWiFi connected");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
-    
-    // Initialize mDNS
-    if (MDNS.begin("blinds")) {
-      Serial.println("mDNS responder started");
-      Serial.println("You can now access the device at http://blinds.local");
-      
-      // Add service to mDNS
-      MDNS.addService("http", "tcp", 80);
-    } else {
-      Serial.println("Error setting up mDNS responder!");
-    }
-    
-    // Setup web server routes
-    setupWebServer();
+    isAPMode = false;
   } else {
-    Serial.println("\nWiFi connection failed");
+    Serial.println("\nWiFi connection failed, starting Access Point mode");
+    startAccessPoint();
   }
+  
+  // Initialize mDNS
+  if (MDNS.begin("blinds")) {
+    Serial.println("mDNS responder started");
+    Serial.println("You can now access the device at http://blinds.local");
+    
+    // Add service to mDNS
+    MDNS.addService("http", "tcp", 80);
+  } else {
+    Serial.println("Error setting up mDNS responder!");
+  }
+  
+  // Setup web server routes
+  setupWebServer();
+  serverRunning = true;
   
   // Check if button is pressed during startup for setup mode
   if (digitalRead(ENCODER_BTN) == LOW) {
@@ -167,6 +192,9 @@ void setup() {
 void loop() {
   // Handle mDNS updates
   MDNS.update();
+  
+  // Check server health
+  checkServerHealth();
   
   // Handle web server requests
   server.handleClient();
@@ -193,6 +221,89 @@ void loop() {
   
   // Yield to prevent watchdog timer issues
   yield();
+}
+
+void checkServerHealth() {
+  if (millis() - lastServerCheck >= SERVER_CHECK_INTERVAL) {
+    lastServerCheck = millis();
+    
+    // Try to make a request to the server
+    HTTPClient http;
+    WiFiClient client;
+    String url = "http://" + WiFi.localIP().toString() + "/api/status";
+    if (http.begin(client, url)) {
+      int httpCode = http.GET();
+      http.end();
+      
+      if (httpCode != 200) {
+        Serial.println("Server health check failed. HTTP code: " + String(httpCode));
+        serverRunning = false;
+        
+        // Check if we should attempt a restart
+        if (serverRestartCount < MAX_RESTARTS && 
+            (millis() - lastRestartAttempt) > RESTART_COOLDOWN) {
+          restartServer();
+        }
+      } else {
+        serverRunning = true;
+        // Reset restart count if server is healthy
+        serverRestartCount = 0;
+      }
+    } else {
+      Serial.println("Failed to begin HTTP request");
+      serverRunning = false;
+    }
+  }
+}
+
+void restartServer() {
+  Serial.println("Attempting to restart server...");
+  lastRestartAttempt = millis();
+  serverRestartCount++;
+  
+  // Stop the current server
+  server.stop();
+  delay(1000);
+  
+  // Reinitialize WiFi if needed
+  if (!isAPMode) {
+    if (wifiMulti.run() != WL_CONNECTED) {
+      Serial.println("Reconnecting to WiFi...");
+      int attempts = 0;
+      while (wifiMulti.run() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+      }
+      
+      // If still not connected, switch to AP mode
+      if (wifiMulti.run() != WL_CONNECTED) {
+        Serial.println("WiFi connection failed, switching to Access Point mode");
+        startAccessPoint();
+      }
+    }
+  }
+  
+  // Restart mDNS
+  MDNS.end();
+  if (MDNS.begin("blinds")) {
+    MDNS.addService("http", "tcp", 80);
+  }
+  
+  // Restart the server
+  setupWebServer();
+  server.begin();
+  serverRunning = true;
+  
+  Serial.println("Server restart completed. Attempt " + String(serverRestartCount) + " of " + String(MAX_RESTARTS));
+}
+
+// Add a function to handle server errors
+void handleServerError() {
+  if (!serverRunning) {
+    Serial.println("Server error detected, attempting recovery...");
+    restartServer();
+  }
 }
 
 void loadSettingsFromEEPROM() {
@@ -370,7 +481,7 @@ void updateMotor() {
     
     // Take a single step with proper timing
     digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(STEP_DELAY);
+    delayMicroseconds(STEP_DELAY);  // Much longer delay for maximum torque
     digitalWrite(STEP_PIN, LOW);
     
     // Update position
@@ -410,15 +521,16 @@ void updateMotor() {
       }
     }
     
-    // Speed control
+    // Speed control with very gradual acceleration/deceleration
     if (isMoving) {
       long stepsRemaining = abs(targetPosition - currentPosition);
-      if (stepsRemaining > 100) {
+      if (stepsRemaining > 300) {  // Much longer acceleration zone
         stepDelay = MAX_SPEED;
-      } else if (stepsRemaining < 20) {
+      } else if (stepsRemaining < 100) {  // Much longer deceleration zone
         stepDelay = MIN_SPEED;
       } else {
-        stepDelay = (MAX_SPEED + MIN_SPEED) / 2;
+        // Linear interpolation between MAX_SPEED and MIN_SPEED
+        stepDelay = MAX_SPEED + ((MIN_SPEED - MAX_SPEED) * (300 - stepsRemaining) / 200);
       }
     }
   }
@@ -559,7 +671,13 @@ void setupWebServer() {
   server.on("/api/alarms", HTTP_POST, handleSetAlarms);
   server.on("/api/time", HTTP_GET, handleGetTime);
   server.on("/api/time", HTTP_POST, handleSetTime);
-  server.on("/api/setup", HTTP_GET, handleSetupMode);  // New endpoint
+  server.on("/api/setup", HTTP_GET, handleSetupMode);
+  
+  // Add error handling
+  server.onNotFound([]() {
+    handleServerError();
+    server.send(404, "text/plain", "Not found");
+  });
   
   // Start server
   server.begin();
@@ -661,6 +779,21 @@ void handleRoot() {
   html += "        </div>\n";
   html += "      </div>\n";
   html += "    </div>\n";
+  html += "  </div>\n";
+  
+  // Add network status to the page
+  html += "  <div style=\"margin-top: 20px; padding: 10px; background-color: #f8f9fa; border-radius: 5px;\">\n";
+  html += "    <h3>Network Status</h3>\n";
+  if (isAPMode) {
+    html += "    <p>Mode: Access Point</p>\n";
+    html += "    <p>SSID: " + String(AP_SSID) + "</p>\n";
+    html += "    <p>Password: " + String(AP_PASSWORD) + "</p>\n";
+    html += "    <p>IP Address: " + WiFi.softAPIP().toString() + "</p>\n";
+  } else {
+    html += "    <p>Mode: WiFi Client</p>\n";
+    html += "    <p>Connected to: " + WiFi.SSID() + "</p>\n";
+    html += "    <p>IP Address: " + WiFi.localIP().toString() + "</p>\n";
+  }
   html += "  </div>\n";
   
   // Remove all setup mode related JavaScript
@@ -886,12 +1019,13 @@ void handleStatus() {
   json += "\"state\":" + String(blindState) + ",";
   json += "\"isMoving\":" + String(isMoving ? "true" : "false") + ",";
   json += "\"targetPosition\":" + String(targetPosition) + ",";
-  json += "\"percentage\":" + String((currentPosition - minPosition) * 100 / (maxPosition - minPosition));
+  json += "\"percentage\":" + String((currentPosition - minPosition) * 100 / (maxPosition - minPosition)) + ",";
+  json += "\"networkMode\":" + String(isAPMode ? "\"AP\"" : "\"WiFi\"") + ",";
+  json += "\"ipAddress\":" + String(isAPMode ? "\"" + WiFi.softAPIP().toString() + "\"" : "\"" + WiFi.localIP().toString() + "\"");
   json += "}";
   
   server.send(200, "application/json", json);
 }
-
 
 void handleMoveTo() {
   if (server.hasArg("percentage")) {
@@ -1100,4 +1234,21 @@ void handleSetTime() {
   } else {
     server.send(400, "text/plain", "Missing request body");
   }
+}
+
+void startAccessPoint() {
+  // Configure AP mode
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD);
+  
+  IPAddress IP = WiFi.softAPIP();
+  Serial.println("Access Point Started");
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  Serial.print("SSID: ");
+  Serial.println(AP_SSID);
+  Serial.print("Password: ");
+  Serial.println(AP_PASSWORD);
+  
+  isAPMode = true;
 }
