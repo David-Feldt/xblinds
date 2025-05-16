@@ -6,6 +6,8 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266HTTPClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 // Add watchdog timer
 #include <ESP8266WiFiMulti.h>
@@ -32,9 +34,9 @@ unsigned long lastRestartAttempt = 0;
 // Motor settings
 #define STEPS_PER_REVOLUTION 200
 #define MICROSTEPS 1  // Full steps for maximum torque
-#define MAX_SPEED 5000          // Very slow maximum speed for maximum torque
-#define MIN_SPEED 8000          // Very slow minimum speed for maximum torque
-#define STEP_DELAY 500          // Much longer base delay between steps for maximum torque
+#define MAX_SPEED 8000          // Even slower maximum speed for maximum torque
+#define MIN_SPEED 12000         // Even slower minimum speed for maximum torque
+#define STEP_DELAY 1000         // Much longer base delay between steps for maximum torque
 #define ENCODER_MULTIPLIER 200   // How many steps per encoder click
 
 // EEPROM addresses
@@ -106,6 +108,9 @@ bool isAPMode = false;
 const char* AP_SSID = "blinds";
 const char* AP_PASSWORD = ""; // You can change this password
 
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", -14400, 60000); // EDT timezone (-4 hours)
+
 void setup() {
   // Initialize serial for debugging
   Serial.begin(115200);
@@ -157,6 +162,9 @@ void setup() {
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
     isAPMode = false;
+    
+    // Sync time from NTP on boot
+    syncTimeFromNTP();
   } else {
     Serial.println("\nWiFi connection failed, starting Access Point mode");
     startAccessPoint();
@@ -524,13 +532,13 @@ void updateMotor() {
     // Speed control with very gradual acceleration/deceleration
     if (isMoving) {
       long stepsRemaining = abs(targetPosition - currentPosition);
-      if (stepsRemaining > 300) {  // Much longer acceleration zone
+      if (stepsRemaining > 500) {  // Much longer acceleration zone
         stepDelay = MAX_SPEED;
-      } else if (stepsRemaining < 100) {  // Much longer deceleration zone
+      } else if (stepsRemaining < 200) {  // Much longer deceleration zone
         stepDelay = MIN_SPEED;
       } else {
         // Linear interpolation between MAX_SPEED and MIN_SPEED
-        stepDelay = MAX_SPEED + ((MIN_SPEED - MAX_SPEED) * (300 - stepsRemaining) / 200);
+        stepDelay = MAX_SPEED + ((MIN_SPEED - MAX_SPEED) * (500 - stepsRemaining) / 300);
       }
     }
   }
@@ -630,6 +638,12 @@ void checkAlarms() {
   
   // Debug print current time
   Serial.print("Current time: ");
+  Serial.print(now.day());
+  Serial.print("/");
+  Serial.print(now.month());
+  Serial.print("/");
+  Serial.print(now.year());
+  Serial.print(" ");
   Serial.print(now.hour());
   Serial.print(":");
   if (now.minute() < 10) Serial.print("0");
@@ -672,6 +686,7 @@ void setupWebServer() {
   server.on("/api/time", HTTP_GET, handleGetTime);
   server.on("/api/time", HTTP_POST, handleSetTime);
   server.on("/api/setup", HTTP_GET, handleSetupMode);
+  server.on("/api/sync-ntp", HTTP_GET, handleSyncTimeNTP);
   
   // Add error handling
   server.onNotFound([]() {
@@ -685,6 +700,7 @@ void setupWebServer() {
 }
 
 void handleRoot() {
+  DateTime now = rtc.now();
   String html = "<!DOCTYPE html>\n";
   html += "<html>\n";
   html += "<head>\n";
@@ -747,6 +763,7 @@ void handleRoot() {
   // Add Alarms Section
   html += "  <div class=\"alarms-section\" style=\"margin-top: 20px; padding: 20px; background-color: #f5f5f5; border-radius: 5px;\">\n";
   html += "    <h2>Alarms</h2>\n";
+  html += "<p>Current time: " + String(now.day()) + "/" + String(now.month()) + "/" + String(now.year()) + " " + String(now.hour()) + ":" + String(now.minute()) + "</p>\n";
   html += "    <div id=\"alarmsList\">Loading alarms...</div>\n";
   html += "    <div class=\"add-alarm\" style=\"margin-top: 20px;\">\n";
   html += "      <h3>Add New Alarm</h3>\n";
@@ -794,6 +811,23 @@ void handleRoot() {
     html += "    <p>Connected to: " + WiFi.SSID() + "</p>\n";
     html += "    <p>IP Address: " + WiFi.localIP().toString() + "</p>\n";
   }
+  html += "  </div>\n";
+  
+  // Add time settings section
+  html += "  <div style=\"margin-top: 20px; padding: 10px; background-color: #f0f4c3; border-radius: 5px;\">\n";
+  html += "    <h3>Time Settings</h3>\n";
+  html += "    <p>Current time: " + String(now.day()) + "/" + String(now.month()) + "/" + String(now.year()) + " " + 
+           String(now.hour()) + ":" + (now.minute() < 10 ? "0" : "") + String(now.minute()) + "</p>\n";
+  html += "    <div style=\"display: flex; flex-wrap: wrap; gap: 10px;\">\n";
+  html += "      <div style=\"flex: 1;\">\n";
+  html += "        <button class=\"btn\" onclick=\"syncTimeNTP()\"" + String(isAPMode ? " disabled" : "") + ">Sync with Internet Time</button>\n";
+  html += "      </div>\n";
+  html += "      <div style=\"flex: 1;\">\n";
+  html += "        <label for=\"customTime\">Or set custom time:</label>\n";
+  html += "        <input type=\"datetime-local\" id=\"customTime\" style=\"width: 100%;\">\n";
+  html += "        <button class=\"btn\" onclick=\"setCustomTime()\" style=\"margin-top: 10px;\">Set Custom Time</button>\n";
+  html += "      </div>\n";
+  html += "    </div>\n";
   html += "  </div>\n";
   
   // Remove all setup mode related JavaScript
@@ -1003,6 +1037,38 @@ void handleRoot() {
   html += "        .then(response => response.text())\n";
   html += "        .then(() => fetchAlarms())\n";
   html += "        .catch(error => console.error('Error deleting alarm:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function syncTimeNTP() {\n";
+  html += "      fetch('/api/sync-ntp')\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          alert('Time synchronized with NTP server');\n";
+  html += "          window.location.reload();\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error syncing time:', error));\n";
+  html += "    }\n";
+  html += "    \n";
+  html += "    function setCustomTime() {\n";
+  html += "      const customTime = document.getElementById('customTime').value;\n";
+  html += "      if (!customTime) {\n";
+  html += "        alert('Please select a date and time');\n";
+  html += "        return;\n";
+  html += "      }\n";
+  html += "      \n";
+  html += "      fetch('/api/time', {\n";
+  html += "        method: 'POST',\n";
+  html += "        headers: {\n";
+  html += "          'Content-Type': 'application/json'\n";
+  html += "        },\n";
+  html += "        body: JSON.stringify({ datetime: customTime })\n";
+  html += "      })\n";
+  html += "        .then(response => response.text())\n";
+  html += "        .then(() => {\n";
+  html += "          alert('Time set successfully');\n";
+  html += "          window.location.reload();\n";
+  html += "        })\n";
+  html += "        .catch(error => console.error('Error setting time:', error));\n";
   html += "    }\n";
   html += "  </script>\n";
   html += "</body>\n";
@@ -1251,4 +1317,60 @@ void startAccessPoint() {
   Serial.println(AP_PASSWORD);
   
   isAPMode = true;
+}
+
+void syncTimeFromNTP() {
+  if (isAPMode) {
+    // Cannot sync time in AP mode
+    Serial.println("Cannot sync time from NTP in AP mode");
+    return;
+  }
+  
+  Serial.println("Syncing time from NTP server...");
+  timeClient.begin();
+  
+  if (timeClient.update()) {
+    Serial.println("NTP time sync successful");
+    // Get the UTC time
+    unsigned long epochTime = timeClient.getEpochTime();
+    
+    // Convert to DateTime for RTC
+    time_t rawtime = epochTime;
+    struct tm * ptm = gmtime(&rawtime);
+    
+    DateTime ntpTime(ptm->tm_year + 1900, ptm->tm_mon + 1, ptm->tm_mday, 
+                   ptm->tm_hour, ptm->tm_min, ptm->tm_sec);
+    
+    // Set RTC time
+    rtc.adjust(ntpTime);
+    
+    // Log the new time
+    DateTime now = rtc.now();
+    Serial.print("RTC time updated to: ");
+    Serial.print(now.year(), DEC);
+    Serial.print('/');
+    Serial.print(now.month(), DEC);
+    Serial.print('/');
+    Serial.print(now.day(), DEC);
+    Serial.print(' ');
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    Serial.println(now.second(), DEC);
+  } else {
+    Serial.println("Failed to get time from NTP server");
+  }
+  
+  timeClient.end();
+}
+
+void handleSyncTimeNTP() {
+  if (isAPMode) {
+    server.send(400, "text/plain", "Cannot sync time from NTP in AP mode");
+    return;
+  }
+  
+  syncTimeFromNTP();
+  server.send(200, "text/plain", "Time synced from NTP");
 }
