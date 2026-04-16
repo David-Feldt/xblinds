@@ -16,13 +16,13 @@ ota:
     password: ""
 
 wifi:
-  ssid: "Feldtfam"
-  password: "Nectarine03"
+  ssid: "YOUR_WIFI_SSID"
+  password: "YOUR_WIFI_PASSWORD"
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Blinds Fallback Hotspot"
-    password: "AFaJYytevPWE"
+    password: "YOUR_AP_PASSWORD"
 
 captive_portal:
     

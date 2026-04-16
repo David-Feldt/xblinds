@@ -1,5 +1,26 @@
-# Gitignore settings for ESPHome
-# This is an example and may include too much for your use-case.
-# You can modify this file to suit your needs.
+# ESPHome
 /.esphome/
 /secrets.yaml
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Build artifacts
+build/
+.pio/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Installers / large binaries
+*.dmg
+*.exe
+*.msi
+
+# FreeCAD backup files
+*.FCBak
