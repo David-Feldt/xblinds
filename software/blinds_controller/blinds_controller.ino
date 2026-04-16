@@ -52,13 +52,9 @@ unsigned long lastRestartAttempt = 0;
 #define BLIND_DOWN 1
 #define BLIND_CUSTOM 2
 
-// WiFi settings
-//Old
-const char* ssid = "Feldtfam";
-const char* password = "Nectarine03";
-//New 
-// const char* ssid = "New Stadium Guests";
-// const char* password = "combo#2please";
+// WiFi settings - UPDATE THESE WITH YOUR NETWORK CREDENTIALS
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
 
 // Global objects
 RTC_DS3231 rtc;
